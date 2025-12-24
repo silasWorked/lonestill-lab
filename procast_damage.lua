@@ -10,6 +10,7 @@ local Settings = {
     showKillableOnly = false,
     cacheUpdateRate = 0.1,
     enableLogs = true,
+    enableMedusaCalc = true,
     drawKillColor = {50, 255, 50, 255},
     drawLowHPColor = {255, 165, 0, 255},
     drawSafeColor = {255, 50, 50, 255},
@@ -30,9 +31,7 @@ local initialized = false
 
  
 local function LogInfo(message)
-    if Settings.enableLogs then
-        Log.Write("[Procast Damage] " .. tostring(message))
-    end
+    Log.Write("[Procast Damage] " .. tostring(message))
 end
 
  
@@ -43,6 +42,7 @@ local function LoadSettings()
     Settings.showKillableOnly = Config.ReadInt(CONFIG_FILE, "showKillableOnly", 0) == 1
     Settings.cacheUpdateRate = Config.ReadFloat(CONFIG_FILE, "cacheUpdateRate", 0.1)
     Settings.enableLogs = Config.ReadInt(CONFIG_FILE, "enableLogs", 1) == 1
+    Settings.enableMedusaCalc = Config.ReadInt(CONFIG_FILE, "enableMedusaCalc", 1) == 1
     Settings.fontSize = Config.ReadInt(CONFIG_FILE, "fontSize", 16)
 
     Log.Write("[Procast Damage] Settings loaded. Enabled: " .. tostring(Settings.enabled) .. ", Logs: " .. tostring(Settings.enableLogs))
@@ -54,6 +54,7 @@ local function SaveSettings()
     Config.WriteInt(CONFIG_FILE, "showKillableOnly", Settings.showKillableOnly and 1 or 0)
     Config.WriteFloat(CONFIG_FILE, "cacheUpdateRate", Settings.cacheUpdateRate)
     Config.WriteInt(CONFIG_FILE, "enableLogs", Settings.enableLogs and 1 or 0)
+    Config.WriteInt(CONFIG_FILE, "enableMedusaCalc", Settings.enableMedusaCalc and 1 or 0)
     Config.WriteInt(CONFIG_FILE, "fontSize", Settings.fontSize)
     
     LogInfo("Settings saved to config")
@@ -83,29 +84,15 @@ local function CreateMenu()
     local tabSettings = secondTab:Create("Settings")
     tabSettings:Icon("\u{f013}")   
     local gMain = tabSettings:Create("Main")
-            gAbout:Label("Version: 1.0.0")
-            gAbout:Button("Telegram channel", function()
-                local url = "https://t.me/procast_scripts"
-                local safe = url:gsub("'", "\\'")
-                Log.Write("[Procast Damage] Opening Telegram: " .. safe)
-                local scripts = {
-                    string.format("$.DispatchEvent('ExternalBrowserGoToURL', '%s');", safe),
-                    string.format("$.DispatchEvent('BrowserGoToURL', '%s');", safe),
-                    string.format("$.DispatchEvent('ExternalBrowserGoToURL', '%s', '%s');", safe, safe),
-                    string.format("$.DispatchEvent('BrowserGoToURL', '%s', '%s');", safe, safe)
-                }
-                for _, js in ipairs(scripts) do
-                    Engine.RunScript(js)
-                end
-            end):Unsafe(true)
     MenuItems.enabled = gMain:Switch("Enable", true)
     MenuItems.enabled:ToolTip("Enable/disable procast damage calculator")
     
-     
     MenuItems.showKillableOnly = gMain:Switch("Show Killable Only", false)
     MenuItems.showKillableOnly:ToolTip("Show damage only for heroes that can be killed")
     
-     
+    MenuItems.enableMedusaCalc = gMain:Switch("Medusa Mana Shield Calc(very unstable)", true)
+    MenuItems.enableMedusaCalc:ToolTip("Enable special damage calculation for Medusa with Mana Shield")
+    
     MenuItems.fontSize = gMain:Slider("Font Size", 10, 32, 16)
     MenuItems.fontSize:ToolTip("Size of the damage text")
     
@@ -121,8 +108,29 @@ local function CreateMenu()
     MenuItems.enableLogs:ToolTip("Enable debug logging to console")
     
      
-    MenuItems.cacheUpdateRate = gDebug:Slider("Update Rate", 0.05, 0.5, 0.1, "%.2f")
+    MenuItems.cacheUpdateRate = gDebug:Slider("Update Rate", 0.05, 0.5, 1, "%.2f")
     MenuItems.cacheUpdateRate:ToolTip("How often to recalculate damage (in seconds)")
+
+     
+     
+     
+    local tabAbout = secondTab:Create("About")
+    tabAbout:Icon("\u{f05a}")   
+    local gAbout = tabAbout:Create("Info")
+
+    gAbout:Label("Version: 1.0.0")
+    gAbout:Button("https://t.me/lonestill_lab", function()
+        local url = "https://t.me/lonestill_lab"
+        local safe = url:gsub("'", "\\'")
+        Log.Write("[Procast Damage] Opening Telegram: " .. safe)
+        local scripts = {
+            string.format("$.DispatchEvent('ExternalBrowserGoToURL', '%s');", safe),
+
+        }
+        for _, js in ipairs(scripts) do
+            Engine.RunScript(js)
+        end
+    end):Unsafe(true)
     
     Log.Write("[Procast Damage] Menu widgets created successfully")
 end
@@ -141,6 +149,12 @@ local function UpdateSettingsFromMenu()
     if MenuItems.showKillableOnly:Get() ~= Settings.showKillableOnly then
         Settings.showKillableOnly = MenuItems.showKillableOnly:Get()
         needsSave = true
+    end
+    
+    if MenuItems.enableMedusaCalc:Get() ~= Settings.enableMedusaCalc then
+        Settings.enableMedusaCalc = MenuItems.enableMedusaCalc:Get()
+        needsSave = true
+        LogInfo("Medusa Mana Shield calculation " .. (Settings.enableMedusaCalc and "enabled" or "disabled"))
     end
     
     if MenuItems.enableLogs:Get() ~= Settings.enableLogs then
@@ -188,36 +202,51 @@ local function GetPhysicalDamageMultiplier(target)
     return armorMult or 1.0
 end
 
-local function GetSpellAmp(caster)
+local function GetSpellAmp(caster, logDetails)
     if not caster then
         return 0
     end
-    local amp = NPC.GetBaseSpellAmp(caster) or 0
-    amp = amp + (NPC.GetModifierProperty(caster, Enum.ModifierFunction.MODIFIER_PROPERTY_SPELL_AMPLIFY_PERCENTAGE) or 0)
-    amp = amp + (NPC.GetModifierProperty(caster, Enum.ModifierFunction.MODIFIER_PROPERTY_SPELL_AMPLIFY_PERCENTAGE_UNIQUE) or 0)
-    amp = amp + (NPC.GetModifierProperty(caster, Enum.ModifierFunction.MODIFIER_PROPERTY_SPELL_AMPLIFY_PERCENTAGE_CREEP) or 0)
-    return amp
+    
+     
+    local base = NPC.GetBaseSpellAmp(caster) or 0
+    
+     
+    local unique = NPC.GetModifierProperty(caster, Enum.ModifierFunction.MODIFIER_PROPERTY_SPELL_AMPLIFY_PERCENTAGE_UNIQUE) or 0
+    local creep = NPC.GetModifierProperty(caster, Enum.ModifierFunction.MODIFIER_PROPERTY_SPELL_AMPLIFY_PERCENTAGE_CREEP) or 0
+    
+     
+    local finalAmp = base
+    if unique ~= 0 then
+        finalAmp = base + unique * (1 + base / 100)
+    end
+    
+    if logDetails and Settings.enableLogs then
+        local generic = NPC.GetModifierProperty(caster, Enum.ModifierFunction.MODIFIER_PROPERTY_SPELL_AMPLIFY_PERCENTAGE) or 0
+        LogInfo(string.format("Spell Amp: base=%.1f%% unique=%.1f%% -> final=%.1f%% | (generic=%.1f%% creep=%.1f%%)", 
+            base, unique, finalAmp, generic, creep))
+    end
+    
+    return finalAmp
 end
-
- 
-local function GetAbilityDamage(ability, target, caster)
+local function GetAbilityDamage(ability, caster)
     if not ability or not Entity.IsAbility(ability) then
         return 0
     end
     
     local damage = 0
-    local level = Ability.GetLevel(ability)
+    local level = 0
+    pcall(function() level = Ability.GetLevel(ability) or 0 end)
     
     if level <= 0 then
         return 0
     end
     
-    local abilityName = Ability.GetName(ability)
+    local abilityName = ""
+    pcall(function() abilityName = Ability.GetName(ability) or "" end)
     
-     
-    damage = Ability.GetDamage(ability) or 0
+    pcall(function() damage = Ability.GetDamage(ability) or 0 end)
+    
     if damage == 0 then
-         
         local damageFields = {
             "damage", "strike_damage", "tooltip_damage",
             "damage_impact", "wave_damage", "nuke_damage", "total_damage",
@@ -229,8 +258,9 @@ local function GetAbilityDamage(ability, target, caster)
         }
         
         for _, field in ipairs(damageFields) do
-            local value = Ability.GetLevelSpecialValueFor(ability, field)
-            if value and value > 0 then
+            local value = 0
+            pcall(function() value = Ability.GetLevelSpecialValueFor(ability, field) or 0 end)
+            if value > 0 then
                 damage = value
                 break
             end
@@ -238,7 +268,6 @@ local function GetAbilityDamage(ability, target, caster)
     end
     
     if damage == 0 then
-         
         local specialFields = {
             ["nevermore_requiem"] = {"requiem_line_damage", "requiem_damage", "damage_per_line"},
             ["lina_laguna_blade"] = {"damage_scepter"},
@@ -248,8 +277,9 @@ local function GetAbilityDamage(ability, target, caster)
         local abilitySpecial = specialFields[abilityName]
         if abilitySpecial then
             for _, field in ipairs(abilitySpecial) do
-                local value = Ability.GetLevelSpecialValueFor(ability, field)
-                if value and value > 0 then
+                local value = 0
+                pcall(function() value = Ability.GetLevelSpecialValueFor(ability, field) or 0 end)
+                if value > 0 then
                     damage = value
                     break
                 end
@@ -261,100 +291,106 @@ local function GetAbilityDamage(ability, target, caster)
         end
     end
     
-     
     if abilityName == "nevermore_requiem" and caster then
         local necromastery = NPC.GetModifier(caster, "modifier_nevermore_necromastery")
         if necromastery then
-            local souls = Modifier.GetStackCount(necromastery)
+            local souls = 0
+            pcall(function() souls = Modifier.GetStackCount(necromastery) or 0 end)
             if souls > 0 then
                 damage = damage * souls
             end
         end
     end
-    
-     
-    local damageType = Ability.GetDamageType(ability)
-    if (not damageType or damageType == 0) and abilityName and string.match(abilityName, "^item_") then
-        damageType = 2
-    end
 
-    if damageType then
-        if damageType == 2 then
-            damage = damage * GetMagicResistMultiplier(target)
-        elseif damageType == 1 then
-            damage = damage * GetPhysicalDamageMultiplier(target)
+    if abilityName == "lion_finger_of_death" and caster then
+        local kills = 0
+        local fingerKills = NPC.GetModifier(caster, "modifier_lion_finger_of_death_kill_counter")
+        if fingerKills then
+            pcall(function() kills = Modifier.GetStackCount(fingerKills) or 0 end)
         end
+        local charges = 0
+        pcall(function() charges = Ability.GetCurrentCharges(ability) or 0 end)
+        if charges > kills then
+            kills = charges
+        end
+
+        if kills > 0 then
+            local bonusDamagePerKill = 0
+            pcall(function() bonusDamagePerKill = Ability.GetLevelSpecialValueFor(ability, "damage_per_kill") or 0 end)
+            if bonusDamagePerKill == 0 then
+                pcall(function() bonusDamagePerKill = Ability.GetLevelSpecialValueFor(ability, "damage_per_kill_scepter") or 0 end)
+            end
+
+            if bonusDamagePerKill > 0 then
+                damage = damage + (kills * bonusDamagePerKill)
+            end
+        end
+    end
+    
+    local damageType = 0
+    pcall(function() damageType = Ability.GetDamageType(ability) or 0 end)
+    if (damageType == 0 or damageType == nil) and abilityName and string.match(abilityName, "^item_") then
+        damageType = 2 
     end
 
     if damageType == 2 or damageType == 4 then
-        local amp = GetSpellAmp(caster)
+        local amp = GetSpellAmp(caster, false)
         if amp ~= 0 then
             damage = damage * (1 + amp / 100)
         end
     end
-
     return damage
 end
 
  
 local function CalculateTotalDamage(myHero, target)
+
     if not myHero or not target then
-        LogInfo("CalculateTotalDamage: myHero or target is nil")
         return 0
     end
     
-    local totalDamage = 0
-    local abilityCount = 0
-    local itemCount = 0
-    local foundAbilities = 0
-    local castableAbilities = 0
-    local foundItems = 0
+    local totalRawDamage = 0
     
-     
+
     for i = 0, 23 do
         local ability = NPC.GetAbilityByIndex(myHero, i)
         if ability then
-            foundAbilities = foundAbilities + 1
-            local abilityName = Ability.GetName(ability)
-            local level = Ability.GetLevel(ability)
-            
-             
-            if level > 0 and not string.match(abilityName, "^special_bonus") and 
-               not string.match(abilityName, "^generic_hidden") and
-               not string.match(abilityName, "ability_capture") and
-               not string.match(abilityName, "portal_warp") and
-               not string.match(abilityName, "ability_lamp") then
-                
-                castableAbilities = castableAbilities + 1
-                if Ability.IsReady(ability) then
-                    local abilityDamage = GetAbilityDamage(ability, target, myHero)
-                    
-                    if abilityDamage > 0 then
-                        totalDamage = totalDamage + abilityDamage
-                        abilityCount = abilityCount + 1
+            local level = 0
+            pcall(function() level = Ability.GetLevel(ability) or 0 end)
+            if level > 0 then
+                local isReady = false
+                pcall(function() isReady = Ability.IsReady(ability) end)
+                if isReady then
+                    local name = Ability.GetName(ability)
+                    if not string.match(name, "^special_bonus") and 
+                       not string.match(name, "^generic_hidden") and
+                       not string.match(name, "ability_capture") then
+                        
+                        local dmg = GetAbilityDamage(ability, myHero)
+                        if dmg > 0 then
+                            totalRawDamage = totalRawDamage + dmg
+                        end
                     end
                 end
             end
         end
     end
     
-     
     for i = 0, 8 do
         local item = NPC.GetItemByIndex(myHero, i)
-        if item and Ability.IsReady(item) then
-            local itemDamage = GetAbilityDamage(item, target, myHero)
-            
-            if itemDamage > 0 then
-                totalDamage = totalDamage + itemDamage
-                itemCount = itemCount + 1
+        if item then
+            local isReady = false
+            pcall(function() isReady = Ability.IsReady(item) end)
+            if isReady then
+                local dmg = GetAbilityDamage(item, myHero)
+                if dmg > 0 then
+                    totalRawDamage = totalRawDamage + dmg
+                end
             end
         end
     end
     
-    if totalDamage > 0 then
-        LogInfo(string.format("Total damage: %.1f from %d abilities and %d items", totalDamage, abilityCount, itemCount))
-    end
-    return totalDamage
+    return totalRawDamage
 end
 
  
@@ -398,50 +434,111 @@ local function UpdateDamageCache()
 end
 
  
-local function DrawHPRemaining(hero, damage)
+local function DrawHPRemaining(hero, rawDamage)
+    
     if not hero or not Entity.IsAlive(hero) then
         return
     end
     
-     
     local heroPos = Entity.GetAbsOrigin(hero)
     if not heroPos then
         return
     end
     
-     
     local barOffset = NPC.GetHealthBarOffset(hero) or 150
     local drawPos = heroPos + Vector(0, 0, barOffset + 10)
     
-     
     local x, y, visible = Renderer.WorldToScreen(drawPos)
-    
     if not visible then
         return
     end
     
-     
-    local currentHP = Entity.GetHealth(hero)
-    local remainingHP = currentHP - damage
+    local heroName = NPC.GetUnitName(hero)
+    local isMedusa = heroName == "npc_dota_hero_medusa" and Settings.enableMedusaCalc
     
-     
-    if Settings.showKillableOnly and remainingHP > 0 then
+    local finalDamage = rawDamage
+    local manaSpent = 0
+    
+    if isMedusa then
+        local manaShield = NPC.GetAbility(hero, "medusa_mana_shield")
+        if manaShield then
+            local manaShieldLevel = 0
+            pcall(function() manaShieldLevel = Ability.GetLevel(manaShield) or 0 end)
+            
+            if manaShieldLevel > 0 then
+                local heroLevel = 1
+                pcall(function() heroLevel = NPC.GetLevel(hero) or 1 end)
+                local currentMana = 0
+                pcall(function() currentMana = NPC.GetMana(hero) or 0 end)
+                
+                local manaPerDamage = 2.4 + (0.1 * heroLevel)
+                
+                local absorbPart = finalDamage * 0.98
+                local passPart = finalDamage * 0.02
+                
+                local manaNeeded = absorbPart / manaPerDamage
+                
+                if currentMana >= manaNeeded then
+                    manaSpent = manaNeeded
+                    finalDamage = passPart
+                else
+
+                    manaSpent = currentMana
+                    local damageBlocked = currentMana * manaPerDamage
+                    local damageOverflow = absorbPart - damageBlocked
+                    finalDamage = passPart + damageOverflow
+                end
+            end
+        end
+    end
+
+    local resistMult = 1.0
+    
+    if isMedusa then
+        resistMult = GetMagicResistMultiplier(hero)
+    else
+        resistMult = GetMagicResistMultiplier(hero) 
+    end
+    
+    finalDamage = finalDamage * resistMult
+    
+    if Settings.showKillableOnly and finalDamage <= 0 then
         return
     end
     
-     
     local color = Settings.drawSafeColor
-    if remainingHP <= 0 then
-        color = Settings.drawKillColor
-    elseif remainingHP < currentHP * 0.3 then
-        color = Settings.drawLowHPColor
+    local text = ""
+    
+    if isMedusa then
+        local currentMana = 0
+        pcall(function() currentMana = NPC.GetMana(hero) or 0 end)
+        local remainingMana = currentMana - manaSpent
+        
+        if remainingMana <= 0 then
+            color = Settings.drawKillColor
+        elseif remainingMana < currentMana * 0.3 then
+            color = Settings.drawLowHPColor
+        end
+        
+        text = string.format("MANA COST %.0f | MANA %.0f | HP DMG %.0f", 
+            manaSpent, math.max(0, remainingMana), finalDamage)
+    else
+        local currentHP = 0
+        pcall(function() currentHP = Entity.GetHealth(hero) or 0 end)
+        local remainingHP = currentHP - finalDamage
+        
+        if remainingHP <= 0 then
+            color = Settings.drawKillColor
+        elseif remainingHP < currentHP * 0.3 then
+            color = Settings.drawLowHPColor
+        end
+        
+        text = string.format("DMG %.0f | HP %.0f", finalDamage, math.max(0, remainingHP))
     end
 
     local r, g, b, a = color[1], color[2], color[3], color[4] or 255
-    local text = string.format("DMG %d | HP %d", math.floor(damage), math.max(0, math.floor(remainingHP)))
 
     if font then
-         
         Renderer.SetDrawColor(0, 0, 0, a)
         Renderer.DrawText(font, x + 1, y + 1, text)
 
@@ -466,6 +563,7 @@ local function Initialize()
         if MenuItems.enabled then
             MenuItems.enabled:Set(Settings.enabled)
             MenuItems.showKillableOnly:Set(Settings.showKillableOnly)
+            MenuItems.enableMedusaCalc:Set(Settings.enableMedusaCalc)
             MenuItems.enableLogs:Set(Settings.enableLogs)
             MenuItems.fontSize:Set(Settings.fontSize)
             MenuItems.cacheUpdateRate:Set(Settings.cacheUpdateRate)
@@ -480,11 +578,22 @@ local function Initialize()
     end
 end
 
- 
+-- Initialize immediately on script load
+do
+    Log.Write("[Procast Damage] Script loading...")
+    local success, err = pcall(function()
+        Initialize()
+    end)
+    if not success then
+        Log.Write("[Procast Damage] LOAD ERROR: " .. tostring(err))
+    end
+end
+
 return {
     OnUpdate = function()
-         
+        -- Debug: check if callback is being called
         if not initialized then
+            Log.Write("[Procast Damage] OnUpdate - not initialized yet, calling Initialize()")
             Initialize()
         end
         
@@ -503,7 +612,7 @@ return {
          
         if not font then
             font = Renderer.LoadFont("Tahoma", Settings.fontSize, 0, 600)
-            LogInfo("Font loaded: " .. tostring(font))
+            Log.Write("[Procast Damage] Font loaded: " .. tostring(font))
         end
         
         local myHero = Heroes.GetLocal()
