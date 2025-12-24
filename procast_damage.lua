@@ -29,10 +29,7 @@ local cacheTime = 0
  
 local initialized = false
 
- 
-local function LogInfo(message)
-    Log.Write("[Procast Damage] " .. tostring(message))
-end
+
 
  
 local function LoadSettings()
@@ -56,8 +53,7 @@ local function SaveSettings()
     Config.WriteInt(CONFIG_FILE, "enableLogs", Settings.enableLogs and 1 or 0)
     Config.WriteInt(CONFIG_FILE, "enableMedusaCalc", Settings.enableMedusaCalc and 1 or 0)
     Config.WriteInt(CONFIG_FILE, "fontSize", Settings.fontSize)
-    
-    LogInfo("Settings saved to config")
+
 end
 
  
@@ -154,13 +150,11 @@ local function UpdateSettingsFromMenu()
     if MenuItems.enableMedusaCalc:Get() ~= Settings.enableMedusaCalc then
         Settings.enableMedusaCalc = MenuItems.enableMedusaCalc:Get()
         needsSave = true
-        LogInfo("Medusa Mana Shield calculation " .. (Settings.enableMedusaCalc and "enabled" or "disabled"))
     end
     
     if MenuItems.enableLogs:Get() ~= Settings.enableLogs then
         Settings.enableLogs = MenuItems.enableLogs:Get()
         needsSave = true
-        LogInfo("Logging " .. (Settings.enableLogs and "enabled" or "disabled"))
     end
     
     if MenuItems.fontSize:Get() ~= Settings.fontSize then
@@ -222,8 +216,6 @@ local function GetSpellAmp(caster, logDetails)
     
     if logDetails and Settings.enableLogs then
         local generic = NPC.GetModifierProperty(caster, Enum.ModifierFunction.MODIFIER_PROPERTY_SPELL_AMPLIFY_PERCENTAGE) or 0
-        LogInfo(string.format("Spell Amp: base=%.1f%% unique=%.1f%% -> final=%.1f%% | (generic=%.1f%% creep=%.1f%%)", 
-            base, unique, finalAmp, generic, creep))
     end
     
     return finalAmp
@@ -414,7 +406,6 @@ local function UpdateDamageCache()
         return
     end
 
-    LogInfo("Updating damage cache...")
 
     local allHeroes = Heroes.GetAll()
     local enemyCount = 0
@@ -429,8 +420,6 @@ local function UpdateDamageCache()
             end
         end
     end
-    
-    LogInfo(string.format("Cache updated for %d enemies", enemyCount))
 end
 
  
